@@ -227,17 +227,26 @@ class House:
 
 # ── Desktop button ────────────────────────────────────────────────────────────
 class DesktopButton:
-    """Non-topmost button that lives at desktop level (below all app windows).
-    Triggers cute slide-off / slide-back animations."""
+    """Draggable button that lives BEHIND all app windows (desktop level).
+    Click to trigger slide animation. Drag to reposition. Position persists."""
     BW, BH = 114, 34
 
     def __init__(self, pet):
-        self.pet      = pet
-        self._hovered = False
+        self.pet       = pet
+        self._hovered  = False
+        self._dragging = False
+        self._drag_ox  = 0
+        self._drag_oy  = 0
+        self._press_rx = 0
+        self._press_ry = 0
+
+        # Load saved position (default: top-left below taskbar)
+        self.bx = int(pet._saved_state.get('btn_x', 16))
+        self.by = int(pet._saved_state.get('btn_y', 50))
 
         self.win = tk.Toplevel(pet.root)
         self.win.overrideredirect(True)
-        self.win.attributes('-topmost', False)   # stays BELOW normal windows
+        self.win.attributes('-topmost', False)
         self.win.resizable(False, False)
 
         self.canvas = tk.Canvas(self.win, width=self.BW, height=self.BH,
@@ -245,15 +254,41 @@ class DesktopButton:
         self.canvas.pack()
         self.win.configure(bg='#0f172a')
 
-        # Top-left corner, just below where a taskbar would sit
-        self.win.geometry(f'{self.BW}x{self.BH}+16+50')
-        self.win.lower()   # push below all windows
+        self.win.geometry(f'{self.BW}x{self.BH}+{self.bx}+{self.by}')
+        # Lower once → sits behind all WM-managed windows (app windows)
+        self.win.lower()
 
-        self.canvas.bind('<Button-1>', lambda e: pet._toggle_slide())
-        self.canvas.bind('<Enter>',    lambda e: self._on_hover(True))
-        self.canvas.bind('<Leave>',    lambda e: self._on_hover(False))
+        self.canvas.bind('<ButtonPress-1>',   self._press)
+        self.canvas.bind('<B1-Motion>',       self._drag)
+        self.canvas.bind('<ButtonRelease-1>', self._release)
+        self.canvas.bind('<Enter>',           lambda e: self._on_hover(True))
+        self.canvas.bind('<Leave>',           lambda e: self._on_hover(False))
         self._draw()
 
+    # ── Drag ──────────────────────────────────────────────────────────────────
+    def _press(self, e):
+        self._press_rx = e.x_root
+        self._press_ry = e.y_root
+        self._drag_ox  = e.x_root - self.bx
+        self._drag_oy  = e.y_root - self.by
+        self._dragging = False
+
+    def _drag(self, e):
+        self._dragging = True
+        self.bx = e.x_root - self._drag_ox
+        self.by = e.y_root - self._drag_oy
+        self.win.geometry(f'{self.BW}x{self.BH}+{int(self.bx)}+{int(self.by)}')
+
+    def _release(self, e):
+        if not self._dragging:
+            self.pet._toggle_slide()   # click → animate
+        else:
+            self.pet._save_state()     # drag ended → persist new position
+        self._dragging = False
+        # Return to background after each interaction
+        self.win.after(50, self.win.lower)
+
+    # ── Visuals ───────────────────────────────────────────────────────────────
     def _on_hover(self, on):
         self._hovered = on
         self._draw()
@@ -267,7 +302,6 @@ class DesktopButton:
         bg  = '#334155' if self._hovered else ('#0f172a' if hidden else '#1e293b')
         rim = '#93c5fd' if hidden else '#60a5fa'
 
-        # Rounded rect background
         r = 8
         pts = [r,0, w-r,0, w-r,0, w,0, w,r,
                w,h-r, w,h, w-r,h, r,h, 0,h,
@@ -276,15 +310,8 @@ class DesktopButton:
 
         label = '🐾  Wake Bitbe!' if hidden else '🐾  Hide Bitbe'
         c.create_text(w // 2, h // 2, text=label,
-                      fill='#e2e8f0' if not hidden else '#93c5fd',
+                      fill='#93c5fd' if hidden else '#e2e8f0',
                       font=('Segoe UI', 9, 'bold'))
-
-    def keep_lowered(self):
-        """Call every frame to prevent other windows pushing us up."""
-        try:
-            self.win.lower()
-        except Exception:
-            pass
 
     def refresh(self):
         self._draw()
@@ -433,12 +460,16 @@ class Pet:
     def _save_state(self):
         if not hasattr(self, 'house'):
             return
+        btn_x = self.desktop_btn.bx if hasattr(self, 'desktop_btn') else 16
+        btn_y = self.desktop_btn.by if hasattr(self, 'desktop_btn') else 50
         data = {
             'timestamp': time.time(),
             'in_house':  self.state == S_IN_HOUSE,
             'house_x':   self.house.hx,
             'house_y':   self.house.hy,
             'hidden':    self._slide_anim == 'hidden',
+            'btn_x':     btn_x,
+            'btn_y':     btn_y,
         }
         try:
             with open(STATE_FILE, 'w') as f:
@@ -566,7 +597,6 @@ class Pet:
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     def _loop(self):
-        self.desktop_btn.keep_lowered()
         self._update()
         self._draw()
         self.root.after(FRAME_MS, self._loop)
