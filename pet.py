@@ -227,94 +227,50 @@ class House:
 
 # ── Desktop button ────────────────────────────────────────────────────────────
 class DesktopButton:
-    """Draggable button that lives BEHIND all app windows (desktop level).
-    Click to trigger slide animation. Drag to reposition. Position persists."""
-    BW, BH = 114, 34
+    """Plain window with a button. Non-topmost — click any app to send it behind.
+    Drag by the title bar. Position is saved across reboots."""
 
     def __init__(self, pet):
-        self.pet       = pet
-        self._hovered  = False
-        self._dragging = False
-        self._drag_ox  = 0
-        self._drag_oy  = 0
-        self._press_rx = 0
-        self._press_ry = 0
+        self.pet        = pet
+        self._save_job  = None
 
-        # Load saved position (default: top-left below taskbar)
-        self.bx = int(pet._saved_state.get('btn_x', 16))
-        self.by = int(pet._saved_state.get('btn_y', 50))
+        bx = int(pet._saved_state.get('btn_x', 16))
+        by = int(pet._saved_state.get('btn_y', 50))
 
         self.win = tk.Toplevel(pet.root)
-        self.win.overrideredirect(True)
+        self.win.title('Bitbe')
         self.win.attributes('-topmost', False)
         self.win.resizable(False, False)
+        self.win.configure(bg='#1e293b')
+        self.win.geometry(f'+{bx}+{by}')
 
-        self.canvas = tk.Canvas(self.win, width=self.BW, height=self.BH,
-                                highlightthickness=0, bg='#0f172a')
-        self.canvas.pack()
-        self.win.configure(bg='#0f172a')
+        # Save position 1 s after the window stops moving
+        self.win.bind('<Configure>', self._on_configure)
 
-        self.win.geometry(f'{self.BW}x{self.BH}+{self.bx}+{self.by}')
-        # Lower once → sits behind all WM-managed windows (app windows)
-        self.win.lower()
+        self._btn = tk.Button(
+            self.win,
+            text='🐾  Hide Bitbe',
+            command=pet._toggle_slide,
+            bg='#1e293b', fg='#e2e8f0',
+            activebackground='#334155', activeforeground='#e2e8f0',
+            font=('Segoe UI', 10, 'bold'),
+            relief='flat', bd=0,
+            padx=16, pady=8,
+            cursor='hand2',
+        )
+        self._btn.pack()
 
-        self.canvas.bind('<ButtonPress-1>',   self._press)
-        self.canvas.bind('<B1-Motion>',       self._drag)
-        self.canvas.bind('<ButtonRelease-1>', self._release)
-        self.canvas.bind('<Enter>',           lambda e: self._on_hover(True))
-        self.canvas.bind('<Leave>',           lambda e: self._on_hover(False))
-        self._draw()
-
-    # ── Drag ──────────────────────────────────────────────────────────────────
-    def _press(self, e):
-        self._press_rx = e.x_root
-        self._press_ry = e.y_root
-        self._drag_ox  = e.x_root - self.bx
-        self._drag_oy  = e.y_root - self.by
-        self._dragging = False
-
-    def _drag(self, e):
-        self._dragging = True
-        self.bx = e.x_root - self._drag_ox
-        self.by = e.y_root - self._drag_oy
-        self.win.geometry(f'{self.BW}x{self.BH}+{int(self.bx)}+{int(self.by)}')
-
-    def _release(self, e):
-        if not self._dragging:
-            self.pet._toggle_slide()   # click → animate
-        else:
-            self.pet._save_state()     # drag ended → persist new position
-        self._dragging = False
-        # Return to background after each interaction
-        self.win.after(50, self.win.lower)
-
-    # ── Visuals ───────────────────────────────────────────────────────────────
-    def _on_hover(self, on):
-        self._hovered = on
-        self._draw()
-
-    def _draw(self):
-        c = self.canvas
-        w, h = self.BW, self.BH
-        c.delete('all')
-        hidden = (getattr(self.pet, '_slide_anim', None) == 'hidden')
-
-        bg  = '#334155' if self._hovered else ('#0f172a' if hidden else '#1e293b')
-        rim = '#93c5fd' if hidden else '#60a5fa'
-
-        r = 8
-        pts = [r,0, w-r,0, w-r,0, w,0, w,r,
-               w,h-r, w,h, w-r,h, r,h, 0,h,
-               0,h-r, 0,r, 0,0, r,0]
-        c.create_polygon(pts, fill=bg, outline=rim, width=1.5, smooth=True)
-
-        label = '🐾  Wake Bitbe!' if hidden else '🐾  Hide Bitbe'
-        c.create_text(w // 2, h // 2, text=label,
-                      fill='#93c5fd' if hidden else '#e2e8f0',
-                      font=('Segoe UI', 9, 'bold'))
+    def _on_configure(self, e):
+        if self._save_job:
+            self.win.after_cancel(self._save_job)
+        self._save_job = self.win.after(1000, self.pet._save_state)
 
     def refresh(self):
-        self._draw()
+        hidden = getattr(self.pet, '_slide_anim', None) == 'hidden'
+        self._btn.config(
+            text='🐾  Wake Bitbe!' if hidden else '🐾  Hide Bitbe',
+            fg='#93c5fd'          if hidden else '#e2e8f0',
+        )
 
 
 # ── Pet ───────────────────────────────────────────────────────────────────────
@@ -460,8 +416,11 @@ class Pet:
     def _save_state(self):
         if not hasattr(self, 'house'):
             return
-        btn_x = self.desktop_btn.bx if hasattr(self, 'desktop_btn') else 16
-        btn_y = self.desktop_btn.by if hasattr(self, 'desktop_btn') else 50
+        if hasattr(self, 'desktop_btn'):
+            btn_x = self.desktop_btn.win.winfo_x()
+            btn_y = self.desktop_btn.win.winfo_y()
+        else:
+            btn_x, btn_y = 16, 50
         data = {
             'timestamp': time.time(),
             'in_house':  self.state == S_IN_HOUSE,
