@@ -222,6 +222,69 @@ class House:
             p._return_home()
 
 
+# ── Toggle button ─────────────────────────────────────────────────────────────
+class ToggleButton:
+    """Tiny always-on-top button in the top-right corner. Click to show/hide Bitbe."""
+    SIZE = 28
+
+    def __init__(self, pet):
+        self.pet      = pet
+        self._hovered = False
+        sz = self.SIZE
+
+        self.win = tk.Toplevel(pet.root)
+        self.win.overrideredirect(True)
+        self.win.attributes('-topmost', True)
+        self.win.resizable(False, False)
+
+        self.canvas = tk.Canvas(self.win, width=sz, height=sz,
+                                highlightthickness=0, bg='#0f172a')
+        self.canvas.pack()
+        self.win.configure(bg='#0f172a')
+
+        self.win.geometry(f'{sz}x{sz}+{pet._sw - sz - 8}+8')
+
+        self.canvas.bind('<Button-1>', lambda e: pet._toggle_hidden())
+        self.canvas.bind('<Enter>',    lambda e: self._on_hover(True))
+        self.canvas.bind('<Leave>',    lambda e: self._on_hover(False))
+        self._draw()
+
+    def _on_hover(self, on):
+        self._hovered = on
+        self._draw()
+
+    def _draw(self):
+        c  = self.canvas
+        sz = self.SIZE
+        c.delete('all')
+        hidden = getattr(self.pet, '_hidden', False)
+
+        bg  = '#475569' if self._hovered else ('#1e293b' if not hidden else '#0f172a')
+        rim = '#93c5fd' if hidden else '#60a5fa'
+        c.create_oval(2, 2, sz - 2, sz - 2, fill=bg, outline=rim, width=1.5)
+
+        if hidden:
+            # Sleeping z's — Bitbe is hiding
+            c.create_text(sz // 2,     sz // 2 + 2, text='z',
+                          fill='#93c5fd', font=('Segoe UI', 9, 'bold'))
+            c.create_text(sz // 2 + 5, sz // 2 - 4, text='z',
+                          fill='#93c5fd', font=('Segoe UI', 6))
+        else:
+            # Mini Bitbe face — tiny blue square + two dot eyes
+            c.create_rectangle(sz // 2 - 6, sz // 2 - 4,
+                               sz // 2 + 6, sz // 2 + 5,
+                               fill='#60a5fa', outline='#1d4ed8', width=1)
+            c.create_oval(sz // 2 - 5, sz // 2 - 3,
+                          sz // 2 - 2, sz // 2,
+                          fill='#1e293b', outline='')
+            c.create_oval(sz // 2 + 2, sz // 2 - 3,
+                          sz // 2 + 5, sz // 2,
+                          fill='#1e293b', outline='')
+
+    def refresh(self):
+        self._draw()
+
+
 # ── Pet ───────────────────────────────────────────────────────────────────────
 class Pet:
     def __init__(self):
@@ -299,6 +362,7 @@ class Pet:
 
         # ── State machine ──────────────────────────────────────────────────────
         self.state        = S_IN_HOUSE if self._saved_state.get('in_house', True) else S_ROAMING
+        self._hidden      = self._saved_state.get('hidden', False)
         self._exit_frame  = 0
         self._enter_frame = 0
 
@@ -310,7 +374,8 @@ class Pet:
         self._place()
 
         # House must come after sw/sh and _saved_state are ready
-        self.house = House(self)
+        self.house      = House(self)
+        self.toggle_btn = ToggleButton(self)
 
         self.root.withdraw()
 
@@ -324,7 +389,9 @@ class Pet:
         self._auto_save()
         self._lowered_for_return = False
 
-        if self.state != S_IN_HOUSE:
+        if self._hidden:
+            self.house.win.withdraw()   # hide house too; toggle button stays
+        elif self.state != S_IN_HOUSE:
             self.root.deiconify()
             self.root.lift()
 
@@ -362,6 +429,7 @@ class Pet:
             'in_house':  self.state == S_IN_HOUSE,
             'house_x':   self.house.hx,
             'house_y':   self.house.hy,
+            'hidden':    self._hidden,
         }
         try:
             with open(STATE_FILE, 'w') as f:
@@ -394,6 +462,21 @@ class Pet:
         except ImportError:
             pass
 
+    # ── Hide / show ───────────────────────────────────────────────────────────
+    def _toggle_hidden(self):
+        self._hidden = not self._hidden
+        if self._hidden:
+            self._particles.clear()
+            self.root.withdraw()
+            self.house.win.withdraw()
+        else:
+            self.house.win.deiconify()
+            if self.state not in (S_IN_HOUSE,):
+                self.root.deiconify()
+                self.root.lift()
+        self.toggle_btn.refresh()
+        self._save_state()
+
     # ── Main loop ─────────────────────────────────────────────────────────────
     def _loop(self):
         self._update()
@@ -422,6 +505,8 @@ class Pet:
 
     # ── Update ────────────────────────────────────────────────────────────────
     def _update(self):
+        if self._hidden:
+            return
         self.house.update()
 
         if self.state == S_IN_HOUSE:
