@@ -33,6 +33,9 @@ HOUSE_W, HOUSE_H = 120, 100
 # Never moves → no compositor ghost-trail from window repositioning.
 STRIP_H = 300   # tall enough to cover ground + max jump (~81 px)
 
+SLIDE_OUT_FRAMES = 65   # ~1.1 s at 60 fps
+SLIDE_IN_FRAMES  = 70   # ~1.2 s
+
 PARTICLE_STYLES = {
     '❤️': ('♥', '#ff8fab'),
     '💤': ('z', '#93c5fd'),
@@ -222,29 +225,31 @@ class House:
             p._return_home()
 
 
-# ── Toggle button ─────────────────────────────────────────────────────────────
-class ToggleButton:
-    """Tiny always-on-top button in the top-right corner. Click to show/hide Bitbe."""
-    SIZE = 28
+# ── Desktop button ────────────────────────────────────────────────────────────
+class DesktopButton:
+    """Non-topmost button that lives at desktop level (below all app windows).
+    Triggers cute slide-off / slide-back animations."""
+    BW, BH = 114, 34
 
     def __init__(self, pet):
         self.pet      = pet
         self._hovered = False
-        sz = self.SIZE
 
         self.win = tk.Toplevel(pet.root)
         self.win.overrideredirect(True)
-        self.win.attributes('-topmost', True)
+        self.win.attributes('-topmost', False)   # stays BELOW normal windows
         self.win.resizable(False, False)
 
-        self.canvas = tk.Canvas(self.win, width=sz, height=sz,
+        self.canvas = tk.Canvas(self.win, width=self.BW, height=self.BH,
                                 highlightthickness=0, bg='#0f172a')
         self.canvas.pack()
         self.win.configure(bg='#0f172a')
 
-        self.win.geometry(f'{sz}x{sz}+{pet._sw - sz - 8}+8')
+        # Top-left corner, just below where a taskbar would sit
+        self.win.geometry(f'{self.BW}x{self.BH}+16+50')
+        self.win.lower()   # push below all windows
 
-        self.canvas.bind('<Button-1>', lambda e: pet._toggle_hidden())
+        self.canvas.bind('<Button-1>', lambda e: pet._toggle_slide())
         self.canvas.bind('<Enter>',    lambda e: self._on_hover(True))
         self.canvas.bind('<Leave>',    lambda e: self._on_hover(False))
         self._draw()
@@ -254,32 +259,32 @@ class ToggleButton:
         self._draw()
 
     def _draw(self):
-        c  = self.canvas
-        sz = self.SIZE
+        c = self.canvas
+        w, h = self.BW, self.BH
         c.delete('all')
-        hidden = getattr(self.pet, '_hidden', False)
+        hidden = (getattr(self.pet, '_slide_anim', None) == 'hidden')
 
-        bg  = '#475569' if self._hovered else ('#1e293b' if not hidden else '#0f172a')
+        bg  = '#334155' if self._hovered else ('#0f172a' if hidden else '#1e293b')
         rim = '#93c5fd' if hidden else '#60a5fa'
-        c.create_oval(2, 2, sz - 2, sz - 2, fill=bg, outline=rim, width=1.5)
 
-        if hidden:
-            # Sleeping z's — Bitbe is hiding
-            c.create_text(sz // 2,     sz // 2 + 2, text='z',
-                          fill='#93c5fd', font=('Segoe UI', 9, 'bold'))
-            c.create_text(sz // 2 + 5, sz // 2 - 4, text='z',
-                          fill='#93c5fd', font=('Segoe UI', 6))
-        else:
-            # Mini Bitbe face — tiny blue square + two dot eyes
-            c.create_rectangle(sz // 2 - 6, sz // 2 - 4,
-                               sz // 2 + 6, sz // 2 + 5,
-                               fill='#60a5fa', outline='#1d4ed8', width=1)
-            c.create_oval(sz // 2 - 5, sz // 2 - 3,
-                          sz // 2 - 2, sz // 2,
-                          fill='#1e293b', outline='')
-            c.create_oval(sz // 2 + 2, sz // 2 - 3,
-                          sz // 2 + 5, sz // 2,
-                          fill='#1e293b', outline='')
+        # Rounded rect background
+        r = 8
+        pts = [r,0, w-r,0, w-r,0, w,0, w,r,
+               w,h-r, w,h, w-r,h, r,h, 0,h,
+               0,h-r, 0,r, 0,0, r,0]
+        c.create_polygon(pts, fill=bg, outline=rim, width=1.5, smooth=True)
+
+        label = '🐾  Wake Bitbe!' if hidden else '🐾  Hide Bitbe'
+        c.create_text(w // 2, h // 2, text=label,
+                      fill='#e2e8f0' if not hidden else '#93c5fd',
+                      font=('Segoe UI', 9, 'bold'))
+
+    def keep_lowered(self):
+        """Call every frame to prevent other windows pushing us up."""
+        try:
+            self.win.lower()
+        except Exception:
+            pass
 
     def refresh(self):
         self._draw()
@@ -361,8 +366,12 @@ class Pet:
         self._init_claude()
 
         # ── State machine ──────────────────────────────────────────────────────
-        self.state        = S_IN_HOUSE if self._saved_state.get('in_house', True) else S_ROAMING
-        self._hidden      = self._saved_state.get('hidden', False)
+        self.state       = S_IN_HOUSE if self._saved_state.get('in_house', True) else S_ROAMING
+        # _slide_anim: None | 'out' | 'hidden' | 'in'
+        self._slide_anim = 'hidden' if self._saved_state.get('hidden', False) else None
+        self._slide_t    = 0
+        self._slide_ox   = float(self._sw // 2)   # saved pet px for restore
+        self._slide_ohx  = float(self._sw // 2)   # saved house hx for restore
         self._exit_frame  = 0
         self._enter_frame = 0
 
@@ -374,8 +383,8 @@ class Pet:
         self._place()
 
         # House must come after sw/sh and _saved_state are ready
-        self.house      = House(self)
-        self.toggle_btn = ToggleButton(self)
+        self.house       = House(self)
+        self.desktop_btn = DesktopButton(self)
 
         self.root.withdraw()
 
@@ -389,8 +398,8 @@ class Pet:
         self._auto_save()
         self._lowered_for_return = False
 
-        if self._hidden:
-            self.house.win.withdraw()   # hide house too; toggle button stays
+        if self._slide_anim == 'hidden':
+            self.house.win.withdraw()   # keep hidden; desktop button still shows
         elif self.state != S_IN_HOUSE:
             self.root.deiconify()
             self.root.lift()
@@ -429,7 +438,7 @@ class Pet:
             'in_house':  self.state == S_IN_HOUSE,
             'house_x':   self.house.hx,
             'house_y':   self.house.hy,
-            'hidden':    self._hidden,
+            'hidden':    self._slide_anim == 'hidden',
         }
         try:
             with open(STATE_FILE, 'w') as f:
@@ -462,23 +471,102 @@ class Pet:
         except ImportError:
             pass
 
-    # ── Hide / show ───────────────────────────────────────────────────────────
-    def _toggle_hidden(self):
-        self._hidden = not self._hidden
-        if self._hidden:
-            self._particles.clear()
-            self.root.withdraw()
-            self.house.win.withdraw()
-        else:
+    # ── Slide animation ───────────────────────────────────────────────────────
+    def _toggle_slide(self):
+        if self._slide_anim in ('out', 'in'):
+            return   # already animating — ignore
+        if self._slide_anim == 'hidden':
+            # ── Slide IN ──────────────────────────────────────────────────────
+            self._slide_anim = 'in'
+            self._slide_t    = 0
+            # Place both windows off-screen below before deiconifying
+            self.py      = float(self._sh + H)
+            self.px      = self._slide_ox
+            self._jumping = False;  self._jump_dy = 0.0;  self._jump_vy = 0.0
+            self._place()
+            self.house.hx = self._slide_ohx
+            self.house.hy = float(self._sh + HOUSE_H)
+            self.house._place()
             self.house.win.deiconify()
-            if self.state not in (S_IN_HOUSE,):
+            if self.state != S_IN_HOUSE:
                 self.root.deiconify()
                 self.root.lift()
-        self.toggle_btn.refresh()
-        self._save_state()
+        else:
+            # ── Slide OUT — save positions then start wiggle phase ─────────────
+            self._slide_ox  = self.px
+            self._slide_ohx = self.house.hx
+            self._slide_anim = 'out'
+            self._slide_t    = 0
+            self._jumping = False;  self._jump_dy = 0.0;  self._jump_vy = 0.0
+            self.mood = 'excited'
+            self._wiggle()
+        self.desktop_btn.refresh()
+
+    def _update_slide(self):
+        self._slide_t += 1
+
+        if self._slide_anim == 'out':
+            if self._slide_t < 22:
+                # Phase 1: wave goodbye (wiggle already running)
+                return
+
+            # Phase 2: ease-in slide DOWN
+            p  = min(1.0, (self._slide_t - 22) / (SLIDE_OUT_FRAMES - 22))
+            ep = p * p   # ease-in: slow → fast
+
+            off_pet   = ep * (self._sh + H      + H      // 2)
+            off_house = ep * (self._sh + HOUSE_H + HOUSE_H // 2)
+
+            self.py      = self._ground_y + off_pet
+            self._place()
+            self.house.hy = (self._sh - HOUSE_H // 2) + off_house
+            self.house._place()
+
+            if p >= 1.0:
+                self._particles.clear()
+                self.root.withdraw()
+                self.house.win.withdraw()
+                self._slide_anim = 'hidden'
+                self.py       = self._ground_y
+                self.house.hy = float(self._sh - HOUSE_H // 2)
+                self.desktop_btn.refresh()
+                self._save_state()
+
+        elif self._slide_anim == 'in':
+            total = SLIDE_IN_FRAMES
+
+            # House: ease-out with a tiny overshoot bounce
+            hp  = min(1.0, self._slide_t / (total * 0.70))
+            ehp = 1.0 - (1.0 - hp) ** 2   # ease-out
+            # slight bounce: goes 8px past target then settles
+            bounce = math.sin(hp * math.pi) * 8 if hp < 1.0 else 0
+            target_hy = float(self._sh - HOUSE_H // 2)
+            self.house.hy = (self._sh + HOUSE_H) + (target_hy - self._sh - HOUSE_H) * ehp - bounce
+            self.house._place()
+
+            # Pet: ease-out, delayed by 18 frames
+            if self._slide_t > 18:
+                pp  = min(1.0, (self._slide_t - 18) / (total * 0.72))
+                epp = 1.0 - (1.0 - pp) ** 2
+                self.py = (self._sh + H) + (self._ground_y - self._sh - H) * epp
+                self._place()
+
+            if self._slide_t >= total:
+                # Snap to rest, celebrate
+                self.py       = self._ground_y
+                self.house.hy = target_hy
+                self._place()
+                self.house._place()
+                self._slide_anim = None
+                self.mood = 'excited'
+                self._wiggle()
+                self._spawn_particle('❤️', count=4)
+                self.desktop_btn.refresh()
+                self._save_state()
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     def _loop(self):
+        self.desktop_btn.keep_lowered()
         self._update()
         self._draw()
         self.root.after(FRAME_MS, self._loop)
@@ -505,7 +593,10 @@ class Pet:
 
     # ── Update ────────────────────────────────────────────────────────────────
     def _update(self):
-        if self._hidden:
+        if self._slide_anim == 'hidden':
+            return
+        if self._slide_anim in ('out', 'in'):
+            self._update_slide()
             return
         self.house.update()
 
@@ -772,7 +863,7 @@ class Pet:
 
     # ── Drawing ───────────────────────────────────────────────────────────────
     def _draw(self):
-        if self.state == S_IN_HOUSE:
+        if self.state == S_IN_HOUSE or self._slide_anim == 'hidden':
             return
 
         c = self.canvas
