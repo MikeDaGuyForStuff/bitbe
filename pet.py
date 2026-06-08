@@ -243,6 +243,7 @@ class DesktopButton:
         self.win.resizable(False, False)
         self.win.configure(bg='#1e293b')
         self.win.geometry(f'+{bx}+{by}')
+        self.win.protocol('WM_DELETE_WINDOW', lambda: None)  # X button does nothing
 
         # Save position 1 s after the window stops moving
         self.win.bind('<Configure>', self._on_configure)
