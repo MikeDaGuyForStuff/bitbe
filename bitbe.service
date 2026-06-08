@@ -1,0 +1,16 @@
+[Unit]
+Description=Bitbe Desktop Pet
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mikedaguy/Desktop/Bitbe
+ExecStart=/home/mikedaguy/Desktop/Bitbe/venv/bin/python3 /home/mikedaguy/Desktop/Bitbe/pet.py
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=graphical-session.target
